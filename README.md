@@ -1,6 +1,7 @@
 # mojoanalyzer
 
-A conservative static analyzer for Mojo performance and idiom issues, in the spirit of ruff. It is tuned for
+A conservative static analyzer for Mojo performance/idiom issues (MA1xx) and correctness/math-safety issues in
+numeric and trading code (MA2xx), in the spirit of ruff. It is tuned for
 precision over recall: a rule fires only when the parser can prove the preconditions for its rewrite, and each
 finding states its risk.
 
@@ -15,10 +16,15 @@ uv run mojoanalyzer PATH... [--format text|json] [--select MA11,MA102] [--ignore
                             [--min-confidence low|medium|high] [--min-severity info|low|medium|high]
                             [--no-risk fp] [--fail-on low|...|never] [--statistics]
 uv run mojoanalyzer --list-rules
-uv run mojoanalyzer --explain MA114
+uv run mojoanalyzer --explain MA114          # describe a rule
+uv run mojoanalyzer PATH --explain           # add a `why:` line (concrete failure) under each finding
+uv run mojoanalyzer PATH --rule-option MA203.strict=1
 ```
 
-Output: `path:line:col RULE severity confidence message -> suggestion [risk: ...]`
+Output: `path:line:col RULE severity confidence message -> suggestion [risk: ...]`, one line per finding.
+`--format json` emits the same fields plus `why` and `risk_note`.
+
+Correctness-only, high-confidence run: `uv run mojoanalyzer src --select MA2 --min-confidence high`.
 
 - `--min-confidence` defaults to `medium`. Low-confidence findings (heuristic gain only) are opt-in.
 - Exit code 1 if any reported finding is at or above `--fail-on` (default `low`).
@@ -51,6 +57,34 @@ Output: `path:line:col RULE severity confidence message -> suggestion [risk: ...
 | MA118 | literal-arg-to-param | info | api | an Int/Bool arg passed as a literal at every call site and driving a loop bound or hot branch | compile-time parameter (low confidence) |
 | MA119 | copy-into-read-arg | low | none | `f(x.copy())` where `f`'s parameter uses the read convention | pass `x` |
 
+### Correctness rules (MA2xx)
+
+Confidence here means "likely a real defect", not "the pattern matched". Each message says what is wrong, `->` the
+rewrite, and `--explain` adds why it fails (the concrete bad value).
+
+| id | name | sev | conf | flags | suggests |
+|---|---|---|---|---|---|
+| MA201 | unguarded-division | medium | high/med/low | divisor never compared/clamped/validated in the function: `len(xs)`, a 0-initialised counter (high); `n - 1`, `h - l`, a parsed API field (medium); price-like names (low). Skips loop-protected (`for i in range(n): x / n`), same-predicate counters, index decoding (`idx // ns`), lists proven non-empty (append/`xs[0]` earlier), validator calls `if not ok(px)` | `if n == 0: return ...` / `max(d, eps)` |
+| MA202 | int-truncation | medium | med/low | `Int(float)` on a qty/notional (medium if parsed from a string field or visibly signed), `Int(x + 0.5)` on a maybe-negative value | `Int(round(q))`, `Int(floor(x + 1e-9))`, `Int(floor(x + 0.5))` |
+| MA203 | float-equality | low | medium | `==`/`!=` where a side is computed arithmetic; literal compares only for non-dyadic literals (0.1); ties within one array and inf/NaN/MAX sentinels skipped. `MA203.strict=1` flags all literals | `abs(a - b) <= tol` |
+| MA204 | nan-compare | high/info | high/low | compare with `nan()` (always False, high); `n != n` on Int (high); `x != x` / `x - x == 0` idioms (info, low) | `isnan`, `isfinite` |
+| MA205 | math-domain | medium | high/med/low | `sqrt(E[x^2] - E[x]^2)` / `log(a - b)` without clamp (high); `log(a / b)` with unchecked operands (medium if parsed, else low) | `sqrt(max(v, 0.0))` |
+| MA206 | int-true-division | high | high | `Float64(a / b)` with Int operands (Mojo Int `/` floors: 7/2 == 3); bare Int `/` at low | `Float64(a) / Float64(b)` |
+| MA207 | one-sided-tolerance | medium | medium | `a - b < eps` without `abs` | `abs(a - b) < eps` |
+| MA208 | swapped-clamp | high | high/med | `min(max(x, A), B)` with A > B, `clamp(x, hi, lo)`, hi/lo-named swaps | swap bounds |
+| MA209 | suspicious-identity | high | high/med | `x = x`, `a - a` (Int), `x < x`, `t if c else t` | intended operand |
+| MA210 | duplicate-condition | high | high | repeated condition in an if/elif chain | fix the copy |
+| MA211 | identical-branches | medium | medium | every branch of an if/else has the same body | drop the condition |
+| MA212 | unreachable-code | medium | high | statement after return/raise/break/continue | move or delete |
+| MA213 | edge-index | high | high/med | `xs[i - k]` in `range(0, ..)` or `xs[i + k]` in `range(len(xs))` with no test on `i`; `range(len(xs) + 1)`; `xs[len(xs)]` | shift the range |
+| MA214 | discarded-status | medium | med/low | `_ = f()` dropping a Bool status of an action call or a write/send byte count | check / retry |
+| MA215 | unit-scale | medium | low | `1 + x_bps` / `1 + x_pct` with no 1e-4 / 0.01 in the statement or at the field's assignment | `1 + x_bps * 1e-4` |
+
+Ported from: ruff/pylint (float equality, unreachable code), clippy (float_cmp, cast_possible_truncation,
+if_same_then_else, manual clamp), go vet/staticcheck (self-assignment, SA4000 identical operands, x == NaN).
+Not ported: mutable defaults and unused variables/results (Mojo has value semantics and already warns on unused
+values); ddof and sqrt(252)/sqrt(365) consistency (no reliable signal on real code).
+
 Risk levels:
 - `none`: same semantics and the same bits.
 - `fp`: the last bits of FP results change.
@@ -79,16 +113,19 @@ Risk levels:
   `comptime` aliases, struct fields and `unsafe_ptr()`. It also provides conservative mutation analysis (an
   unknown callee counts as a mutator), a project-wide function/call index, and hot-code detection (loop depth,
   GPU kernels, closures passed to `parallelize`/`vectorize`).
+- `rules/correctness.py`: per-function facts shared by MA2xx (guard keys from every comparison, truthiness test,
+  validator call and assert; definitions; range-loop vars; a numeric type lattice Int/Float that follows
+  declarations, casts, math calls and project function return types; ambiguous re-declarations become unknown).
 - `rules/`: one class per rule, each with an id, docstring and bad/good examples. When information is
   missing, rules bail out: unknown element type, unknown callee, any loop exit, aliasing, and so on.
 
-The whole predictionmojo tree (215 files, 105k lines) parses with zero expression-parse failures and analyzes in
-about 10 s.
+The whole predictionmojo tree (224 files, 108k lines) parses with zero expression-parse failures; MA1xx take about
+11 s, MA2xx about 12 s, all rules about 23 s.
 
 ## Development
 
 ```
-uv run pytest                  # 168 tests: tokenizer/parser units, golden fixtures, CLI, mojo build of every fixture/example
+uv run pytest                  # 266 tests: tokenizer/parser units, golden fixtures, CLI, mojo build of every fixture/example
 uv run pytest -m 'not compile' # skip the toolchain tests
 UPDATE_GOLDEN=1 uv run pytest tests/test_fixtures.py
 uvx ruff check && uvx ruff format --check && uvx ty check

@@ -2,6 +2,23 @@ from __future__ import annotations
 
 from ..core import Rule
 from .api import LiteralArgParam
+from .correctness import (
+    DiscardedStatus,
+    DuplicateCondition,
+    EdgeIndex,
+    FloatEquality,
+    IdenticalBranches,
+    IntTrueDivision,
+    IntTruncation,
+    MathDomain,
+    NanCompare,
+    OneSidedTolerance,
+    SuspiciousIdentity,
+    SwappedClamp,
+    UnguardedDivision,
+    UnitScale,
+    UnreachableCode,
+)
 from .gpu import RedundantSync
 from .loops import (
     BoundsCheckedIndex,
@@ -46,6 +63,21 @@ ALL: list[type[Rule]] = sorted(
         RedundantSync,
         LiteralArgParam,
         CopyIntoReadArg,
+        UnguardedDivision,
+        IntTruncation,
+        FloatEquality,
+        NanCompare,
+        MathDomain,
+        IntTrueDivision,
+        OneSidedTolerance,
+        SwappedClamp,
+        SuspiciousIdentity,
+        DuplicateCondition,
+        IdenticalBranches,
+        UnreachableCode,
+        EdgeIndex,
+        DiscardedStatus,
+        UnitScale,
     ],
     key=lambda r: r.id,
 )

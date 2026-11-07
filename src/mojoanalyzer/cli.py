@@ -16,7 +16,9 @@ def _csv(v: str) -> list[str]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="mojoanalyzer", description="Conservative Mojo performance/idiom analyzer")
+    ap = argparse.ArgumentParser(
+        prog="mojoanalyzer", description="Conservative Mojo performance/idiom and correctness analyzer"
+    )
     ap.add_argument("paths", nargs="*", help=".mojo files or directories")
     ap.add_argument("--format", choices=("text", "json"), default="text")
     ap.add_argument("--select", type=_csv, help="comma-separated rule ids/prefixes to enable")
@@ -27,8 +29,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--no-risk", choices=tuple(RISKS), action="append", default=[], help="drop findings with risk")
     ap.add_argument("--statistics", action="store_true", help="print per-rule counts")
     ap.add_argument("--list-rules", action="store_true")
-    ap.add_argument("--explain", metavar="RULE")
+    ap.add_argument(
+        "--explain", metavar="RULE", nargs="?", const="", help="describe RULE; bare: add why-line per finding"
+    )
+    ap.add_argument("--rule-option", action="append", default=[], metavar="RULE.key=val", help="e.g. MA203.strict=1")
     a = ap.parse_args(argv)
+    verbose = False
+    if a.explain is not None and (a.explain == "" or not any(a.explain in (r.id, r.name) for r in ALL)):
+        if a.explain:
+            a.paths.insert(0, a.explain)
+        a.explain, verbose = None, True
+    for opt in a.rule_option:
+        rid, _, kv = opt.partition(".")
+        k, _, v = kv.partition("=")
+        r = next((r for r in ALL if rid in (r.id, r.name)), None)
+        if r is None or not k:
+            print(f"bad --rule-option {opt}", file=sys.stderr)
+            return 2
+        r.options = {**r.options, k: v.lower() not in ("0", "false", "no", "")}
     if a.list_rules:
         for r in ALL:
             print(f"{r.id} {r.name:24} {r.severity:6} risk={r.risk:8} {(r.__doc__ or '').split(chr(10))[0]}")
@@ -40,7 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         doc = " ".join((r.__doc__ or "").split())
         print(f"{r.id} {r.name}\nseverity={r.severity} confidence={r.confidence} risk={r.risk} ({RISKS[r.risk]})")
-        print(f"\n{doc}\n\nbad:\n{r.bad}\n\ngood:\n{r.good}")
+        print(f"\n{doc}" + (f"\n\nwhy: {r.why}" if r.why else "") + f"\n\nbad:\n{r.bad}\n\ngood:\n{r.good}")
         return 0
     if not a.paths:
         ap.error("no paths")
@@ -52,7 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps([f.to_dict() for f in found], indent=1))
     else:
         for f in found:
-            print(f.format())
+            print(f.format(verbose))
         if a.statistics:
             for k, v in sorted(Counter(f.rule for f in found).items()):
                 print(f"{v:6} {k}", file=sys.stderr)

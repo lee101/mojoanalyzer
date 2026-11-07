@@ -52,6 +52,7 @@ class Finding:
     risk: str
     message: str
     suggestion: str
+    why: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -65,14 +66,16 @@ class Finding:
             "risk_note": RISKS[self.risk],
             "message": self.message,
             "suggestion": self.suggestion,
+            "why": self.why,
         }
 
-    def format(self) -> str:
+    def format(self, explain: bool = False) -> str:
         risk = "" if self.risk == "none" else f" [risk: {RISKS[self.risk]}]"
-        return (
+        line = (
             f"{self.path}:{self.line}:{self.col + 1} {self.rule} {self.severity} {self.confidence} "
             f"{self.message} -> {self.suggestion}{risk}"
         )
+        return f"{line}\n    why: {self.why}" if explain and self.why else line
 
 
 class Rule:
@@ -83,6 +86,8 @@ class Rule:
     risk: ClassVar[str] = "none"
     bad: ClassVar[str] = ""
     good: ClassVar[str] = ""
+    why: ClassVar[str] = ""
+    options: ClassVar[dict[str, object]] = {}
 
     def check(self, ctx: FileCtx) -> Iterable[Finding]:
         raise NotImplementedError
@@ -97,6 +102,7 @@ class Rule:
         severity: str | None = None,
         confidence: str | None = None,
         risk: str | None = None,
+        why: str | None = None,
     ) -> Finding:
         return Finding(
             ctx.display,
@@ -108,6 +114,7 @@ class Rule:
             risk or self.risk,
             message,
             suggestion,
+            why if why is not None else self.why,
         )
 
 
@@ -173,7 +180,7 @@ def stmt_nodes(s: Stmt) -> list[Node]:
     elif s.kind in ("return", "raise", "yield", "assert"):
         from .expr import parse_expr
 
-        out.append(parse_expr(s.toks[1:]))
+        out.append(s._memo("ret", lambda: parse_expr(s.toks[1:])))
     return [n for n in out if n is not None]
 
 
