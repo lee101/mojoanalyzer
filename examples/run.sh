@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # usage: examples/run.sh [dir...]   env: MOJO, RUNS (default 3), MOJOMEM=/path/to/mojomem to add allocation counts
 set -u
-MOJO=${MOJO:-/home/lee/code/pm-wt-algo7/.venv/bin/mojo}
+MOJO=${MOJO:-$(command -v mojo)}
 RUNS=${RUNS:-3}
 cd "$(dirname "$0")"
 B=${BUILD_DIR:-/tmp/mojoanalyzer-bench}

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import multiprocessing
+import os
 import re
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -53,6 +55,7 @@ def analyze_sources(
     rule_ids: Sequence[str] | None = None,
     min_confidence: str = "low",
     min_severity: str = "info",
+    jobs: int | None = None,
 ) -> list[Finding]:
     index = Index()
     ctxs = []
@@ -63,29 +66,63 @@ def analyze_sources(
         ctxs.append(ctx)
     rules = [BY_ID[i]() for i in (rule_ids if rule_ids is not None else [r.id for r in ALL])]
     cmin, smin = CONFIDENCES.index(min_confidence), SEVERITIES.index(min_severity)
-    out: list[Finding] = []
-    for ctx in ctxs:
-        file_codes: set[str] | bool | None = False
-        for ln in ctx.lines:
-            m = SUPPRESS_FILE.search(ln)
-            if m:
-                file_codes = _codes(m)
-                break
-        seen: set[tuple[int, int, str]] = set()
-        mine: list[Finding] = []
-        for r in rules:
-            for f in r.check(ctx):
-                key = (f.line, f.col, f.rule)
-                if key in seen or suppressed(f, ctx.lines, file_codes):
-                    continue
-                if CONFIDENCES.index(f.confidence) < cmin or SEVERITIES.index(f.severity) < smin:
-                    continue
-                seen.add(key)
-                mine.append(f)
-        annotate(ctx, mine)
-        out.extend(mine)
+    jobs = _jobs(len(ctxs)) if jobs is None else jobs
+    if jobs > 1 and len(ctxs) >= PARALLEL_MIN:
+        out = _check_parallel(ctxs, rules, cmin, smin, jobs)
+    else:
+        out = [f for ctx in ctxs for f in _check_one(ctx, rules, cmin, smin)]
     out.sort(key=lambda f: (f.path, f.line, f.col, f.rule))
     return out
+
+
+PARALLEL_MIN = 12
+_STATE: list[tuple[list[FileCtx], list, int, int]] = []
+
+
+def _jobs(nfiles: int) -> int:
+    if not hasattr(os, "fork"):
+        return 1
+    env = os.environ.get("MOJOANALYZER_JOBS")
+    n = int(env) if env and env.isdigit() else len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else 1
+    return max(1, min(n, nfiles // 4, 16))
+
+
+def _check_one(ctx: FileCtx, rules: list, cmin: int, smin: int) -> list[Finding]:
+    file_codes: set[str] | bool | None = False
+    for ln in ctx.lines:
+        m = SUPPRESS_FILE.search(ln)
+        if m:
+            file_codes = _codes(m)
+            break
+    seen: set[tuple[int, int, str]] = set()
+    mine: list[Finding] = []
+    for r in rules:
+        for f in r.check(ctx):
+            key = (f.line, f.col, f.rule)
+            if key in seen or suppressed(f, ctx.lines, file_codes):
+                continue
+            if CONFIDENCES.index(f.confidence) < cmin or SEVERITIES.index(f.severity) < smin:
+                continue
+            seen.add(key)
+            mine.append(f)
+    annotate(ctx, mine)
+    return mine
+
+
+def _work(i: int) -> list[Finding]:
+    ctxs, rules, cmin, smin = _STATE[0]
+    return _check_one(ctxs[i], rules, cmin, smin)
+
+
+def _check_parallel(ctxs: list[FileCtx], rules: list, cmin: int, smin: int, jobs: int) -> list[Finding]:
+    _STATE.append((ctxs, rules, cmin, smin))
+    try:
+        order = sorted(range(len(ctxs)), key=lambda i: -len(ctxs[i].lines))
+        with multiprocessing.get_context("fork").Pool(jobs) as pool:
+            res = pool.map(_work, order, chunksize=1)
+    finally:
+        _STATE.clear()
+    return [f for r in res for f in r]
 
 
 def analyze_paths(

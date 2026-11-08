@@ -4,3 +4,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 dist/
+REPORT*
+.claude/
+dist/
+build/
+*.spec
+.mypy_cache/
+.ty_cache/

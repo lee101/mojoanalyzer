@@ -124,7 +124,7 @@ def test_subscript_kw() -> None:
     assert isinstance(n, Call) and isinstance(n.func, Sub) and n.func.kw[0][0] == "width"
 
 
-def test_parses_whole_predictionmojo_shape() -> None:
+def test_parses_whole_project_shape() -> None:
     src = "\n".join(
         [
             "struct S:",

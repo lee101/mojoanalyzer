@@ -17,6 +17,16 @@ def _csv(v: str) -> list[str]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] == ["serve"]:
+        from .server import main as serve_main
+
+        return serve_main(args[1:])
+    if args[:1] == ["--version"]:
+        from . import __version__
+
+        print(__version__)
+        return 0
     ap = argparse.ArgumentParser(
         prog="mojoanalyzer", description="Conservative Mojo performance/idiom and correctness analyzer"
     )
@@ -31,12 +41,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--fail-on", choices=(*SEVERITIES, "never"), default="low", help="exit 1 if a finding >= this")
     ap.add_argument("--no-risk", choices=tuple(RISKS), action="append", default=[], help="drop findings with risk")
     ap.add_argument("--statistics", action="store_true", help="print per-rule counts")
+    ap.add_argument("--jobs", type=int, metavar="N", help="worker processes (default: cpu count, max 16; 1 = serial)")
     ap.add_argument("--list-rules", action="store_true")
     ap.add_argument(
         "--explain", metavar="RULE", nargs="?", const="", help="describe RULE; bare: add why-line per finding"
     )
     ap.add_argument("--rule-option", action="append", default=[], metavar="RULE.key=val", help="e.g. MA203.strict=1")
-    a = ap.parse_args(argv)
+    a = ap.parse_args(args)
     verbose = False
     if a.explain is not None and (a.explain == "" or not any(a.explain in (r.id, r.name) for r in ALL)):
         if a.explain:
@@ -67,7 +78,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ap.error("no paths")
     files = collect(a.paths)
     srcs = [(str(p), p.read_text(encoding="utf-8", errors="replace")) for p in files]
-    found = analyze_sources(srcs, select_rules(a.select, a.ignore), a.min_confidence, a.min_severity)
+    found = analyze_sources(srcs, select_rules(a.select, a.ignore), a.min_confidence, a.min_severity, jobs=a.jobs)
     found = [f for f in found if f.risk not in a.no_risk]
     if a.hot_only:
         found = [f for f in found if f.hot > 0 or f.rule.startswith("MA4")]

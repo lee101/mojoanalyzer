@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>mojoanalyzer</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{font:14px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem}textarea{width:100%;height:16rem;font:13px monospace}pre{background:#f4f4f4;padding:1rem;overflow:auto}@media(prefers-color-scheme:dark){body{background:#111;color:#ddd}pre{background:#222}}</style>
+<h1>mojoanalyzer</h1>
+<textarea id="c">def f(xs: List[Float64]) -> Float64:
+    var s = 0.0
+    for i in range(len(xs)):
+        s += xs[i] / len(xs)
+    return s
+</textarea>
+<p><button id="b">analyze</button></p>
+<pre id="o"></pre>
+<script>
+b.onclick=async()=>{const r=await fetch("api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:c.value,min_confidence:"low"})});const j=await r.json();o.textContent=(j.findings||[]).map(f=>`${f.line}:${f.col} ${f.rule} ${f.severity} ${f.message} -> ${f.suggestion}`).join("\n")||JSON.stringify(j)}
+</script>

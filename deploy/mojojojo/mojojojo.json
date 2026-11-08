@@ -1,0 +1,13 @@
+{
+  "name": "mojoanalyzer",
+  "runtime": "app",
+  "entrypoint": "index.html",
+  "functions": {
+    "analyze": {
+      "language": "python",
+      "entrypoint": "functions/analyze.py",
+      "packages": [],
+      "timeout_ms": 10000
+    }
+  }
+}
