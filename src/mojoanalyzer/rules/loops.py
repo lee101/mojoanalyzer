@@ -653,7 +653,7 @@ class BoundsCheckedIndex(Rule):
                 ptrs = "; ".join(f"var {p.replace('.', '_')}_p = {p}.unsafe_ptr()" for p in lists)
                 yield self.finding(
                     ctx, s, f"bounds-checked List indexing of {', '.join(lists)} in inner loop",
-                    f"{ptrs} before the loop, index the pointer",
+                    f"{ptrs} before the loop, index it as p[unsafe_offset=i]",
                 )  # fmt: skip
 
 

@@ -20,6 +20,8 @@ RISKS = {
     "api": "signature change",
     "codesize": "larger code / compile time",
 }
+SEV_W = {"info": 1, "low": 2, "medium": 4, "high": 8}
+CONF_W = {"low": 1, "medium": 2, "high": 3}
 FLOAT_TYPES = {"Float16", "Float32", "Float64", "BFloat16", "Float8_e4m3fn", "Float8_e5m2"}
 FLOAT_DTYPES = {"DType.float16", "DType.float32", "DType.float64", "DType.bfloat16"}
 PURE_BUILTINS = {
@@ -53,6 +55,12 @@ class Finding:
     message: str
     suggestion: str
     why: str = ""
+    hot: int = 0
+    scope: str = ""
+
+    @property
+    def score(self) -> float:
+        return SEV_W[self.severity] * CONF_W[self.confidence] * (1 + min(self.hot, 3))
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -67,6 +75,8 @@ class Finding:
             "message": self.message,
             "suggestion": self.suggestion,
             "why": self.why,
+            "hot": self.hot,
+            "scope": self.scope,
         }
 
     def format(self, explain: bool = False) -> str:
@@ -131,6 +141,7 @@ class Index:
     funcs: dict[str, list[FuncEntry]] = field(default_factory=dict)
     calls: dict[str, list[tuple[Call, str]]] = field(default_factory=dict)
     bare_refs: set[str] = field(default_factory=set)
+    structs: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def add(self, path: str, mod: Stmt) -> None:
         for s in mod.walk():
@@ -210,6 +221,7 @@ class FileCtx:
                         fields.setdefault("@" + b.decl[0][0], unparse(b.decl[2]))
                 self.structs[s.toks[1].value] = fields
         self._envs: dict[int, dict[str, str]] = {}
+        self._hotf: set[str] | None = None
 
     def defs(self) -> Iterator[Stmt]:
         for s in self.mod.walk():
@@ -434,6 +446,8 @@ def may_mutate(stmts: list[Stmt], name: str, index: Index | None = None, allow_c
                         return True
                     if not allow_calls:
                         callee = f.id if isinstance(f, Name) else None
+                        if isinstance(f, Sub) and isinstance(f.obj, Name) and f.obj.id[:1].isupper():
+                            callee = CTOR
                         for i, a in enumerate(x.args):
                             if root_name(a) == name and not _read_arg(callee, i, index) and not isinstance(a, Call):
                                 return True
@@ -443,10 +457,13 @@ def may_mutate(stmts: list[Stmt], name: str, index: Index | None = None, allow_c
     return False
 
 
+CTOR = "<ctor>"
+
+
 def _read_arg(callee: str | None, i: int, index: Index | None) -> bool:
     if callee is None:
         return False
-    if callee in PURE_BUILTINS or callee == "print":
+    if callee in PURE_BUILTINS or callee in ("print", CTOR):
         return True
     if index is None:
         return False
@@ -461,7 +478,7 @@ def _read_arg(callee: str | None, i: int, index: Index | None) -> bool:
 
 
 def _read_kw(callee: str | None, k: str, index: Index | None) -> bool:
-    if callee == "print" or callee in PURE_BUILTINS:
+    if callee in ("print", CTOR) or callee in PURE_BUILTINS:
         return True
     if callee is None or index is None:
         return False
@@ -587,3 +604,51 @@ def _callee(c: Call) -> str | None:
 
 
 callee = _callee
+
+
+def loop_called(ctx: FileCtx) -> set[str]:
+    """Names of functions in this file called from a loop (or from another loop-called function), to a fixpoint."""
+    if ctx._hotf is not None:
+        return ctx._hotf
+    local = {s.fn.name for s in ctx.defs() if s.fn}
+    sites: list[tuple[str, int, str | None]] = []
+    for s in ctx.mod.walk():
+        if s.kind == "def":
+            continue
+        fn = s.func()
+        d = hot_depth(s)
+        for n in stmt_nodes(s):
+            for x in walk(n):
+                if isinstance(x, Call):
+                    c = _callee(x)
+                    if c in local:
+                        sites.append((c, d, fn.fn.name if fn is not None and fn.fn else None))
+    hot = {c for c, d, _ in sites if d > 0}
+    while True:
+        new = {c for c, _, owner in sites if owner in hot} - hot
+        if not new:
+            break
+        hot |= new
+    ctx._hotf = hot
+    return hot
+
+
+def annotate(ctx: FileCtx, found: list[Finding]) -> None:
+    by_line: dict[int, Stmt] = {}
+    for s in ctx.mod.walk():
+        by_line.setdefault(s.line, s)
+        if s.kind not in ("def", "struct") and not s.body:
+            by_line[s.line] = s
+    hotf = loop_called(ctx)
+    for f in found:
+        s = by_line.get(f.line)
+        if s is None:
+            ln = f.line
+            while ln > 0 and ln not in by_line:
+                ln -= 1
+            s = by_line.get(ln)
+        if s is None:
+            continue
+        fn = s if s.kind == "def" else s.func()
+        f.scope = fn.fn.name if fn is not None and fn.fn else ""
+        f.hot = (hot_depth(s) if s.kind != "def" else 0) + (1 if f.scope in hotf else 0)

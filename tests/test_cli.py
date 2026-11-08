@@ -121,3 +121,74 @@ def test_rule_option_strict_float_eq(tmp_path: Path, capsys: pytest.CaptureFixtu
         BY_ID["MA203"].options = old
     assert main(["--explain", "MA201"]) == 0
     assert "why:" in capsys.readouterr().out
+
+
+HOT = """def f(xs: List[Float64], k: Int) -> Float64:
+    var s = 0.0
+    for i in range(len(xs)):
+        var w = List[Float64]()
+        for j in range(k):
+            w.append(xs[j])
+        s += w[0]
+    return s
+
+
+def g(n: Int) -> List[Int]:
+    var ys = List[Int]()
+    for i in range(n):
+        ys.append(i)
+    return ys^
+"""
+
+
+def test_llm_format_dedupe_and_top(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    p = tmp_path / "h.mojo"
+    p.write_text(SRC.replace("def f(", "def f2(") + "\n\n" + SRC + "\n\n" + HOT)
+    main([str(p), "--format", "llm", "--fail-on", "never", "--min-confidence", "low"])
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("mojoanalyzer ") and "MA106:" in out[0]
+    assert any(ln.startswith(" L") and " MA301 " in ln and " -> " in ln for ln in out)
+    main([str(p), "--format", "llm", "--top", "1", "--fail-on", "never", "--min-confidence", "low"])
+    top = capsys.readouterr().out.splitlines()
+    assert "top 1" in top[0] and len([ln for ln in top if ln.startswith(" L")]) == 1
+
+
+def test_llm_merges_lines_in_one_function() -> None:
+    from mojoanalyzer.core import Finding
+    from mojoanalyzer.report import llm
+
+    fs = [Finding("a.mojo", ln, 0, "MA122", "low", "high", "none", "m", "s", scope="f") for ln in (3, 9)]
+    assert " L3,L9 MA122 m -> s" in llm(fs, 1)
+
+
+def test_hot_only_and_sarif(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    p = tmp_path / "h.mojo"
+    p.write_text(HOT)
+    main([str(p), "--format", "json", "--fail-on", "never", "--min-confidence", "low"])
+    allf = json.loads(capsys.readouterr().out)
+    assert {d["rule"] for d in allf} >= {"MA301", "MA106"}
+    assert all("hot" in d for d in allf)
+    main([str(p), "--format", "json", "--hot-only", "--fail-on", "never", "--min-confidence", "low"])
+    hot = json.loads(capsys.readouterr().out)
+    assert hot and all(d["hot"] > 0 for d in hot) and len(hot) < len(allf)
+    main([str(p), "--format", "sarif", "--fail-on", "never"])
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["version"] == "2.1.0" and doc["runs"][0]["results"][0]["ruleId"].startswith("MA")
+
+
+def test_hot_weighting_called_from_loop() -> None:
+    src = """def leaf(xs: List[Int]) -> Int:
+    var t = 0
+    for i in range(len(xs)):
+        t += xs[i] // 4
+    return t
+
+
+def driver(xs: List[Int]) -> Int:
+    var s = 0
+    for r in range(10):
+        s += leaf(xs)
+    return s
+"""
+    fs = [f for f in analyze_sources([("a.mojo", src)]) if f.rule == "MA122"]
+    assert fs and fs[0].hot == 2 and fs[0].scope == "leaf"

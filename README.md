@@ -1,7 +1,8 @@
 # mojoanalyzer
 
-A conservative static analyzer for Mojo performance/idiom issues (MA1xx) and correctness/math-safety issues in
-numeric and trading code (MA2xx), in the spirit of ruff. It is tuned for
+A conservative static analyzer for Mojo performance/idiom issues (MA1xx), correctness/math-safety issues in
+numeric and trading code (MA2xx), heap-allocation churn (MA3xx) and Mojo 1.2 dialect breakage (MA4xx), in the
+spirit of ruff. It is tuned for
 precision over recall: a rule fires only when the parser can prove the preconditions for its rewrite, and each
 finding states its risk.
 
@@ -12,7 +13,8 @@ Target dialect: Mojo 1.2 nightly (`def`, `comptime`, `comptime for`, `std.` impo
 ## Usage
 
 ```
-uv run mojoanalyzer PATH... [--format text|json] [--select MA11,MA102] [--ignore MA101]
+uv run mojoanalyzer PATH... [--format text|json|llm|sarif] [--top N] [--hot-only]
+                            [--select MA11,MA102] [--ignore MA101]
                             [--min-confidence low|medium|high] [--min-severity info|low|medium|high]
                             [--no-risk fp] [--fail-on low|...|never] [--statistics]
 uv run mojoanalyzer --list-rules
@@ -25,6 +27,13 @@ Output: `path:line:col RULE severity confidence message -> suggestion [risk: ...
 `--format json` emits the same fields plus `why` and `risk_note`.
 
 Correctness-only, high-confidence run: `uv run mojoanalyzer src --select MA2 --min-confidence high`.
+
+For LLM agents: `uv run mojoanalyzer src --format llm --top 40 --hot-only`. Output is grouped by file, one line per
+finding, `L<line> RULE msg -> fix [risk]`; identical findings in one function merge into `L12,L40,L77`; the header
+has per-rule counts. `--top N` ranks by severity x confidence x (1 + hot), where hot = loop depth at the finding
+(closures dispatched by `parallelize`/`vectorize` and GPU kernels count as a level) + 1 if the enclosing function is
+called from a loop elsewhere in the same file (transitively). `--hot-only` keeps findings with hot > 0 (MA4xx
+dialect errors are always kept). JSON and SARIF carry `hot` and `scope` (enclosing function).
 
 - `--min-confidence` defaults to `medium`. Low-confidence findings (heuristic gain only) are opt-in.
 - Exit code 1 if any reported finding is at or above `--fail-on` (default `low`).
@@ -56,6 +65,72 @@ Correctness-only, high-confidence run: `uv run mojoanalyzer src --select MA2 --m
 | MA117 | redundant-gpu-sync | low | none | `ctx.synchronize()` immediately followed by `ctx.enqueue_*` | drop the sync |
 | MA118 | literal-arg-to-param | info | api | an Int/Bool arg passed as a literal at every call site and driving a loop bound or hot branch | compile-time parameter (low confidence) |
 | MA119 | copy-into-read-arg | low | none | `f(x.copy())` where `f`'s parameter uses the read convention | pass `x` |
+
+More performance rules (MA12x-MA13x), each kept only after a measured win or with no speed claim:
+
+| id | name | sev | risk | flags | suggests |
+|---|---|---|---|---|---|
+| MA120 | aos-field-loop | low | api | numeric loop reading <= 1/4 of the bytes of each element of a `List[Struct]` (>= 4 fields, scalar hot fields) | SoA: hot field in its own List |
+| MA121 | struct-padding | info/low | api | struct of fixed-size scalars whose declaration order adds padding (Mojo keeps order: verified 32 B -> 24 B) | largest-first order (low if the struct is stored in a List) |
+| MA122 | pow2-divmod | low | none | Int `x // 2^k`, `x % 2^k` in a numeric loop (comptime-only operands skipped) | `x >> k`, `x & (2^k-1)`: exact for negatives under Mojo floor semantics |
+| MA123 | python-in-loop | medium | none | `Python.import_module`/`evaluate` with literal args in a loop | hoist (no benchmark) |
+| MA124 | print-in-hot-loop | info | none | unconditional `print` in an inner loop whose other statements are numeric | buffer, print once |
+| MA125 | repeated-pure-call | low | none | same call to a provably pure project function containing a loop, twice in one expression | bind once |
+| MA126 | dict-iter-lookup | medium | none | `for k in d:` + `d[k]`, `d` not mutated | `for e in d.items()` |
+| MA127 | sort-in-loop | high | none | `sort(xs)` in a loop that does not otherwise change `xs` | sort once |
+| MA128 | huge-always-inline | info | codesize | `@always_inline` with >= 60 statements and >= 2 call sites | drop it |
+| MA129 | gpu-sync-in-loop | medium | none | loop containing only kernel launches, scalar bookkeeping and `synchronize()` | sync after the loop (no benchmark: host driver too old) |
+| MA130 | gpu-uncoalesced | low | api | kernel loop indexing `buf[tid * S + k]` (thread index on the slow axis) | transposed layout `buf[k * N + tid]` |
+
+Measured and dropped (no win on this toolchain): loop-invariant Bool branch -> comptime parameter/unswitching,
+`raises` on a callee in an inner loop, tail recursion -> loop (LLVM already does both), `@always_inline` on tiny leaf
+functions (already inlined), `var` constant -> `comptime` for loop bounds.
+
+### Allocation rules (MA3xx)
+
+Allocation claims were verified with the real Mojo allocator (`mojomem`, an LD_PRELOAD over
+`KGEN_CompilerRT_AlignedAlloc`); counts are in [examples/RESULTS.md](examples/RESULTS.md).
+
+| id | name | sev | risk | flags | suggests |
+|---|---|---|---|---|---|
+| MA301 | alloc-in-loop | low/medium | none | `List`/`Dict`/`Set`/`String` declared in a loop, grown there, never escaping (no `^`, return, store, owned-arg pass); `alloc[T](n)` freed in the same iteration. Medium when nested or in a loop-called function | hoist above the outermost loop where the ctor is invariant; `clear()` / `resize(0)` in place |
+| MA302 | invariant-alloc-in-loop | medium | none | `.split()`, `String(x)`, `.copy()`, `.upper()`, `.join()`... with loop-invariant operands whose result is only read | compute once before the loop |
+| MA303 | missed-move | medium | none | `x.copy()` that is the last use of local/owned `x` (no loop between decl and use, no closure capture) | `x^` |
+| MA304 | copy-read-only | low | none | `var y = e.copy()` outside loops, `y` only read, `e` unchanged while `y` lives | `ref y = e` |
+| MA305 | dict-key-rebuilt | low | none | same String key expression built for >= 2 lookups of one Dict in a block | build the key once |
+| MA306 | nested-list-rows | low | api | `List[List[T]]` of fixed-length numeric rows (append in a loop, or `length=n, fill=List(length=k)`) | flat `List[T](length=n*k)`, `[i*k + j]` |
+| MA307 | small-writes-in-loop | medium | none | `f.write()` on a FileHandle inside a loop nested in the `with open()`/`var f = open()` scope | buffer in a String, write once |
+| MA308 | dict-capacity | low | none | empty `Dict` + one unconditional insert per iteration of the next loop (count > 64) | `Dict[K, V](capacity=n)` |
+| MA309 | list-bool-bitset | info | api | `List[Bool](length=K, fill=False)`, comptime K >= 64 | `BitSet[K]` |
+
+Measured and dropped: `var w = xs[a:b]` -> `Span` (List slicing already returns a Span view in 1.2, 1 allocation
+either way), `s.write(String(x))` -> `s.write(x)` (short strings are inline/SSO: no heap allocation, no reliable
+time difference). `List` growth without capacity remains MA106; `String` has no capacity constructor and its
+`reserve` is deprecated, so no String rule.
+
+### Dialect rules (MA4xx)
+
+Ported from `mojolint` and re-verified on Mojo 1.2.0.dev2026100805: every error-level rule has
+`positive_cerr_*.mojo` fixtures that the test suite asserts **fail** to build; negatives must build.
+
+| id | name | sev | flags | fix |
+|---|---|---|---|---|
+| MA401 | removed-keyword | high | `fn`, `let`, `alias`; `fn` as a name | `def`, `var`, `comptime` |
+| MA402 | removed-convention | high | `owned`/`inout`/`borrowed` args, `{read x}` capture, `out` as arg name | `var`/`mut`/default, `{imm x}` |
+| MA403 | parameter-decorator | high/low | `@parameter for`/`if` (error); `@parameter def` (deprecated) | `comptime for`/`if`; capture list |
+| MA404 | bare-std-import | high | `from math import ...` with no local module of that name | `from std.math import ...` |
+| MA405 | removed-name | high | `sizeof`/`simdwidthof`/`alignof`/`bitwidthof`, `str()`, `DTypePointer`, `Reference`, `StringRef`, `Stringable`, `InlinedFixedVector`, `isinstance`, `MutableAnyOrigin`, `memset_zero`, `@value`, `@register_passable` (names the file defines or imports from project modules are skipped) | new name |
+| MA406 | removed-method | high/low | `UnsafePointer[T].alloc(n)`, `List.capacity` attribute, SIMD/Float `.min()`/`.max()`; `String.reserve` (deprecated) | `alloc[T](n)`, `.capacity()`, free `min`/`max`, `reserve_bytes` |
+| MA407 | string-len-index | high | `len(s)`, positional `s[i]` on a String | `s.byte_length()`, `s[byte=i]` |
+| MA408 | tuple-return-type | high | `-> (A, B)` | `-> Tuple[A, B]` |
+| MA409 | f-string | high | `f"..."` | `String("x=", x)` |
+| MA410 | simd-eq-scalar | medium | `var m = a == b` on SIMD width > 1 (returns one Bool) | `a.eq(b)` |
+| MA411 | deprecated-pointer-api | low | `UnsafePointer`, pointer `.load`/`.store`/`.free`, positional `p[i]` | `Pointer`, `unsafe_load`/`unsafe_store`/`unsafe_free`, `p[unsafe_offset=i]` |
+| MA412 | export-abi | low | `@export` without `abi(...)` | `def f(...) abi("C") -> T:` |
+
+Not ported (no longer true on 1.2): `vectorize` rejecting capturing closures (compiles), `simd-eq` as a compile
+error (it compiles; MA410 covers the semantic trap), `alloc` in loops as a dialect issue (now MA301 with escape
+analysis), and the regex perf rules (superseded by MA1xx/MA3xx).
 
 ### Correctness rules (MA2xx)
 
@@ -93,7 +168,7 @@ Risk levels:
 - `api`: the signature changes.
 - `codesize`: compile time and code size grow.
 
-`examples/` holds before/after pairs for 13 rules, compiled and timed with the real toolchain. See
+`examples/` holds before/after pairs for 27 rules, compiled and timed with the real toolchain. See
 [examples/RESULTS.md](examples/RESULTS.md): speedups range from 1.06x (MA101) and 1.2x (MA108) up to 9.9x
 (MA114), 11x (MA109) and over 500x (MA115/MA116). Two candidate rules were dropped after measurement:
 `x**2` -> `x*x` and `len()` hoisting gave no gain.
@@ -113,19 +188,23 @@ Risk levels:
   `comptime` aliases, struct fields and `unsafe_ptr()`. It also provides conservative mutation analysis (an
   unknown callee counts as a mutator), a project-wide function/call index, and hot-code detection (loop depth,
   GPU kernels, closures passed to `parallelize`/`vectorize`).
+- `rules/alloc.py` (MA3xx): escape analysis for locals (method/index/read-param uses only), loop invariance (no
+  assignment, `except`/`with` binding or possible mutation in the loop), last-use liveness for `^` moves.
+- `rules/dialect.py` (MA4xx): token- and signature-level checks; skips names the file defines or imports.
+- `report.py`: `llm` and `sarif` output; `core.annotate` attaches `hot`/`scope` to every finding.
 - `rules/correctness.py`: per-function facts shared by MA2xx (guard keys from every comparison, truthiness test,
   validator call and assert; definitions; range-loop vars; a numeric type lattice Int/Float that follows
   declarations, casts, math calls and project function return types; ambiguous re-declarations become unknown).
 - `rules/`: one class per rule, each with an id, docstring and bad/good examples. When information is
   missing, rules bail out: unknown element type, unknown callee, any loop exit, aliasing, and so on.
 
-The whole predictionmojo tree (224 files, 108k lines) parses with zero expression-parse failures; MA1xx take about
-11 s, MA2xx about 12 s, all rules about 23 s.
+The whole predictionmojo tree (218 files, about 105k lines) parses with zero expression-parse failures; all 66 rules
+take about 25 s.
 
 ## Development
 
 ```
-uv run pytest                  # 266 tests: tokenizer/parser units, golden fixtures, CLI, mojo build of every fixture/example
+uv run pytest                  # 547 tests: units, golden fixtures, CLI, mojo build of every fixture/example
 uv run pytest -m 'not compile' # skip the toolchain tests
 UPDATE_GOLDEN=1 uv run pytest tests/test_fixtures.py
 uvx ruff check && uvx ruff format --check && uvx ty check
@@ -134,5 +213,6 @@ examples/run.sh                # re-run benchmarks (MOJO=/path/to/mojo)
 
 Every rule has `tests/fixtures/<RULE>/positive*.mojo` (must fire) and `negative*.mojo` (near misses, must not
 fire), each with a golden `.expected` file covering all rules. All fixtures and examples build with
-`mojo build`. The compile tests use `$MOJO` or `/home/lee/code/pm-wt-algo7/.venv/bin/mojo` and are skipped when
+`mojo build`, except `positive_cerr_*.mojo` dialect fixtures, which must fail to build.
+The compile tests use `$MOJO` or `/home/lee/code/pm-wt-algo7/.venv/bin/mojo` and are skipped when
 neither exists.

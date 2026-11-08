@@ -1,6 +1,17 @@
 from __future__ import annotations
 
 from ..core import Rule
+from .alloc import (
+    AllocInLoop,
+    CopyReadOnly,
+    DictKeyRebuilt,
+    DictNoCapacity,
+    InvariantAlloc,
+    ListBoolBitset,
+    MissedMove,
+    NestedListRows,
+    SmallWritesInLoop,
+)
 from .api import LiteralArgParam
 from .correctness import (
     DiscardedStatus,
@@ -18,6 +29,20 @@ from .correctness import (
     UnguardedDivision,
     UnitScale,
     UnreachableCode,
+)
+from .dialect import (
+    BareStdImport,
+    DeprecatedPointerApi,
+    ExportAbi,
+    FString,
+    ParameterDecorator,
+    RemovedConvention,
+    RemovedKeyword,
+    RemovedMethod,
+    RemovedName,
+    SimdEqScalar,
+    StringIndexLen,
+    TupleReturn,
 )
 from .gpu import RedundantSync
 from .loops import (
@@ -40,6 +65,19 @@ from .memory import (
     QuadraticListOps,
     StringConcatLoop,
     VarArgReadOnly,
+)
+from .perf import (
+    AosFieldLoop,
+    DictIterLookup,
+    GpuSyncInLoop,
+    GpuUncoalesced,
+    HugeAlwaysInline,
+    Pow2DivMod,
+    PrintInHotLoop,
+    PythonInLoop,
+    RepeatedPureCall,
+    SortInLoop,
+    StructPadding,
 )
 
 ALL: list[type[Rule]] = sorted(
@@ -78,6 +116,38 @@ ALL: list[type[Rule]] = sorted(
         EdgeIndex,
         DiscardedStatus,
         UnitScale,
+        AosFieldLoop,
+        StructPadding,
+        Pow2DivMod,
+        PythonInLoop,
+        PrintInHotLoop,
+        RepeatedPureCall,
+        DictIterLookup,
+        SortInLoop,
+        HugeAlwaysInline,
+        GpuSyncInLoop,
+        GpuUncoalesced,
+        AllocInLoop,
+        InvariantAlloc,
+        MissedMove,
+        CopyReadOnly,
+        DictKeyRebuilt,
+        NestedListRows,
+        SmallWritesInLoop,
+        DictNoCapacity,
+        ListBoolBitset,
+        RemovedKeyword,
+        RemovedConvention,
+        ParameterDecorator,
+        BareStdImport,
+        RemovedName,
+        RemovedMethod,
+        StringIndexLen,
+        TupleReturn,
+        FString,
+        SimdEqScalar,
+        DeprecatedPointerApi,
+        ExportAbi,
     ],
     key=lambda r: r.id,
 )

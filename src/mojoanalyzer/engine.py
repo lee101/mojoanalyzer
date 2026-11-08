@@ -4,7 +4,7 @@ import re
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-from .core import CONFIDENCES, SEVERITIES, FileCtx, Finding, Index
+from .core import CONFIDENCES, SEVERITIES, FileCtx, Finding, Index, annotate
 from .rules import ALL, BY_ID
 
 SUPPRESS = re.compile(r"#\s*mojoanalyzer:\s*ignore(?:\[([A-Z0-9, ]+)\])?")
@@ -59,6 +59,7 @@ def analyze_sources(
     for name, src in sources:
         ctx = FileCtx(Path(name), src, index, display=name)
         index.add(name, ctx.mod)
+        index.structs.update(ctx.structs)
         ctxs.append(ctx)
     rules = [BY_ID[i]() for i in (rule_ids if rule_ids is not None else [r.id for r in ALL])]
     cmin, smin = CONFIDENCES.index(min_confidence), SEVERITIES.index(min_severity)
@@ -71,6 +72,7 @@ def analyze_sources(
                 file_codes = _codes(m)
                 break
         seen: set[tuple[int, int, str]] = set()
+        mine: list[Finding] = []
         for r in rules:
             for f in r.check(ctx):
                 key = (f.line, f.col, f.rule)
@@ -79,7 +81,9 @@ def analyze_sources(
                 if CONFIDENCES.index(f.confidence) < cmin or SEVERITIES.index(f.severity) < smin:
                     continue
                 seen.add(key)
-                out.append(f)
+                mine.append(f)
+        annotate(ctx, mine)
+        out.extend(mine)
     out.sort(key=lambda f: (f.path, f.line, f.col, f.rule))
     return out
 

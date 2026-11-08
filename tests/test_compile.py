@@ -36,4 +36,7 @@ def compiled(tmp_path_factory: pytest.TempPathFactory) -> dict[Path, tuple[int, 
 @pytest.mark.parametrize("path", FILES, ids=lambda p: f"{p.parent.name}/{p.name}")
 def test_compiles(path: Path, compiled: dict[Path, tuple[int, str]]) -> None:
     rc, errs = compiled[path]
-    assert rc == 0, errs
+    if "_cerr" in path.stem:
+        assert rc != 0, f"{path} is a compile-error fixture but built"
+    else:
+        assert rc == 0, errs
