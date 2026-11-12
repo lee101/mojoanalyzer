@@ -11,6 +11,18 @@ def tilt(x: List[Float64], a: Float64) -> List[Float64]:
     return w^
 
 
+def fill_cache(mut cache: List[List[Float64]], x: List[Float64]):
+    if len(x) == 0:
+        return
+    var w = List[Float64](length=len(x), fill=1.0)
+    cache.append(w^)
+
+
+def warm(mut cache: List[List[Float64]], xs: List[List[Float64]]):
+    for k in range(len(xs)):
+        fill_cache(cache, xs[k])
+
+
 def nights(xs: List[List[Float64]], a: Float64) -> Float64:
     var acc = 0.0
     var w = List[Float64]()

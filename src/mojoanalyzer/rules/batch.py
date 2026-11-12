@@ -223,7 +223,7 @@ def _fresh_list_return(ctx: FileCtx, name: str) -> bool:
     if not made:
         return False
     rets = [_ret(s) for s in _own_stmts(e.stmt) if s.kind == "return"]
-    return bool(rets) and all(isinstance(r, Transfer) and isinstance(r.operand, Name) and r.operand.id in made for r in rets if r is not None)
+    return bool(rets) and all(isinstance(r, Transfer) and isinstance(r.operand, Name) and r.operand.id in made for r in rets)
 
 
 class FreshListPerCall(Rule):
