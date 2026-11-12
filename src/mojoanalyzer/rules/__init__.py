@@ -13,6 +13,7 @@ from .alloc import (
     SmallWritesInLoop,
 )
 from .api import LiteralArgParam
+from .batch import CopyGetter, FmaChainWidth, FreshListPerCall, ScatteredGather, TempStructField
 from .correctness import (
     DiscardedStatus,
     DuplicateCondition,
@@ -148,6 +149,11 @@ ALL: list[type[Rule]] = sorted(
         SimdEqScalar,
         DeprecatedPointerApi,
         ExportAbi,
+        CopyGetter,
+        ScatteredGather,
+        TempStructField,
+        FreshListPerCall,
+        FmaChainWidth,
     ],
     key=lambda r: r.id,
 )

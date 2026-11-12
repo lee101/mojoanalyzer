@@ -4,7 +4,7 @@ Fast, conservative static analyzer for [Mojo](https://www.modular.com/mojo). Fin
 numeric correctness bugs and Mojo 1.2 dialect breakage, and tells you the risk of every suggested fix.
 Think ruff for Mojo. Pure Python, zero dependencies.
 
-- 66 rules in four families: performance (MA1xx), correctness and math safety for numeric and trading code (MA2xx),
+- 71 rules in four families: performance (MA1xx), correctness and math safety for numeric and trading code (MA2xx),
   heap allocation churn (MA3xx), Mojo 1.2 dialect errors (MA4xx)
 - Precision over recall: a rule fires only when the parser can prove the preconditions for its rewrite
 - Every finding carries severity, confidence and a risk class (`none`, `fp`, `unsafe`, `threads`, `api`, `codesize`)
@@ -53,7 +53,7 @@ Full list with bad and good examples: [docs/rules.md](docs/rules.md).
 
 | family | what | examples |
 |---|---|---|
-| MA1xx (30) | performance and idiom | vectorize, SIMD reductions, `parallelize`, list reserve, loop interchange, `List.insert(0)`, membership in `List` |
+| MA1xx (35) | performance and idiom | scattered gathers, copy getters, FMA chain width, vectorize, SIMD reductions, `parallelize`, list reserve, loop interchange, `List.insert(0)`, membership in `List` |
 | MA2xx (15) | correctness and math safety | unguarded division, `Int(float)` truncation, float equality, NaN compares, `sqrt` of a negative variance, Int `/` flooring, swapped clamps, off-by-one indexes, bps vs fraction |
 | MA3xx (9) | allocation churn | allocation inside hot loops, invariant allocation, missed moves, dict capacity |
 | MA4xx (12) | Mojo 1.2 dialect | removed or renamed syntax that fails to compile |
